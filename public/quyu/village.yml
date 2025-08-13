@@ -1,0 +1,34 @@
+area_id: village
+name: 绿叶村
+desc: 一个宁静的小村庄，四周被森林环绕。
+rooms:
+  - id: village_center
+    name: 村庄中心
+    desc: 广场中央有一口古井。
+    exits:
+      north: village_north
+      east: village_east
+    items: [coin, sword]
+    npcs: [mayor, merchant]
+  - id: village_north
+    name: 村庄北区
+    desc: 北边是农田和村长的房子。
+    exits:
+      south: village_center
+      north: village_north2
+    items: [herb]
+    npcs: []
+  - id: village_east
+    name: 村庄东区
+    desc: 村庄东边是荒地。
+    exits:
+      west: village_center
+    items: [tree_branch]
+    npcs: []
+  - id: village_north2
+    name: 村庄北门
+    desc: 北边的出口。
+    exits:
+      north: forest_entrance
+    items: [herb]
+    npcs: []

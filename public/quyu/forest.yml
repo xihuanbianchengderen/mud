@@ -1,0 +1,9 @@
+area_id: forest
+name: 幽暗森林
+desc: 古老而神秘的森林，充满了未知的危险和宝藏。
+rooms:
+  - id: forest_entrance
+    name: 森林入口
+    desc: 高大的树木遮天蔽日。
+    exits:
+      south: village_north2

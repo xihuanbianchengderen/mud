@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>MUD终端</title>
+  <style>
+    body { background: #111; color: #0f0; font-family: "Consolas", monospace; margin:0;padding:0;}
+    #output { padding:20px; min-height:70vh; max-height:80vh; overflow-y:auto;}
+    #input-line { display:flex; align-items:center; padding:10px;}
+    #prompt { margin-right:10px;}
+    #cmdInput {
+      background:#000;color:#0f0;border:none;font-family:"Consolas",monospace;font-size:16px;
+      width:90vw;min-height:22px;max-height:80px;
+      outline:none;padding:.2em .6em;border-radius:.3em;
+      caret-color:#00ff00;
+      word-break:break-all;
+    }
+    #cmdInput:focus { outline:none;}
+    ::-webkit-scrollbar-thumb{background:#00ff00;}
+  </style>
+</head>
+<body>
+<div id="output">正在加载世界数据...</div>
+<div id="input-line" style="display:none;">
+  <span id="prompt">&gt;</span>
+  <div id="cmdInput" contenteditable="true"></div>
+</div>
+<script src="js-yaml.min.js"></script>
+<script>
+// ========== 联网/本地模式自动检测 ==========
+let ONLINE_MODE = false;
+let SERVER_URL = "http://127.0.0.1:3000/api/ping"; // 改成你的真实后端健康检查接口
+
+async function checkServerOnline() {
+    try {
+        let resp = await fetch(SERVER_URL, {method:'GET',cache:'no-store'});
+        if(resp.ok) return true;
+    } catch(e){}
+    return false;
+}
+
+// ================= 工具函数 ==================
+function showMsg(msg, cls='info') {
+    const output = document.getElementById('output');
+    const el = document.createElement('div');
+    el.style.color = {info:'#0f0',warn:'#ff0',error:'#f55',event:'#7fffd4',success:'#39f691'}[cls]||'#fff';
+    el.innerHTML = msg.replace(/\n/g, '<br>');
+    output.appendChild(el);
+    output.scrollTop = output.scrollHeight;
+}
+function clearScreen() {
+    document.getElementById('output').innerHTML = '';
+}
+// ========== 动态加载所有 YAML 区域 ==========
+async function loadAllAreas() {
+  let fileList;
+  try {
+      const indexResp = await fetch('quyu/index.json');
+      fileList = await indexResp.json();
+      if (!Array.isArray(fileList)) throw 'index.json格式错误';
+  } catch(e) {
+      showMsg('无法加载quyu/index.json，请检查文件。','error');
+      return null;
+  }
+
+  let allAreas = {};
+  let allRooms = {};
+  for (let fname of fileList) {
+      try {
+          let resp = await fetch('quyu/' + fname);
+          let ymlText = await resp.text();
+          let areaObj = jsyaml.load(ymlText);
+          if(areaObj && areaObj.area_id) {
+              allAreas[areaObj.area_id] = areaObj;
+              // 合并所有房间到全局rooms字典
+              if(Array.isArray(areaObj.rooms)){
+                for(let r of areaObj.rooms){
+                  allRooms[r.id] = {...r, area_id: areaObj.area_id, area_name: areaObj.name};
+                }
+              }
+          }
+      } catch(e) {
+          showMsg(`加载${fname}失败！`,'warn');
+      }
+  }
+  return {areas:allAreas, rooms:allRooms};
+}
+
+// ========= 动态加载外部命令 ==========
+async function loadAllCommands() {
+  let cmdList;
+  try {
+      const resp = await fetch('quyu/commands/index.json');
+      cmdList = await resp.json();
+      if (!Array.isArray(cmdList)) throw 'commands/index.json格式错误';
+  } catch(e) {
+      showMsg('无法加载quyu/commands/index.json，请检查文件。','error');
+      return [];
+  }
+
+  for (let fname of cmdList) {
+      await new Promise((resolve,reject)=>{
+          const s=document.createElement('script');
+          s.src='quyu/commands/'+fname;
+          s.onload=resolve; s.onerror=()=>{showMsg(fname+" 加载失败","warn");resolve();};
+          document.body.appendChild(s);
+      });
+  }
+}
+
+// =================== 游戏主逻辑 ===================
+window.MUD_COMMANDS={}; // 全局命令注册表
+let needName = true;
+let GAME={
+   areas:{},
+   rooms:{},
+   player:{
+     name:'冒险者',
+     location:null,
+     inventory:['金币'],
+     health:30,
+     maxHealth:30,
+   },
+   showMsg : showMsg,
+   clearScreen : clearScreen,
+};
+
+let loginUser = localStorage.getItem('mud_user') || null;
+let needLogin = !loginUser;
+
+// 本地存档相关
+function getAllUsers() {
+    let users = localStorage.getItem('mud_users');
+    return users ? JSON.parse(users) : {};
+}
+function saveAllUsers(users) {
+    localStorage.setItem('mud_users', JSON.stringify(users));
+}
+function saveCurrentPlayer() {
+    let users = getAllUsers();
+    users[GAME.player.name] = {...GAME.player};
+    saveAllUsers(users);
+}
+
+async function handleCommand(cmd){
+    cmd = cmd.trim();
+    if(!cmd) return;
+
+    setTimeout(()=>{
+        let c=document.getElementById('cmdInput');
+        c.innerHTML='';
+        c.focus();
+    },10);
+
+    showMsg("> "+cmd,"event");
+
+    let args = cmd.split(/\s+/), verb = args[0].toLowerCase(), argStr = args.slice(1).join(' ').trim();
+
+    // 登录或载入流程
+    if (needLogin && !["login", "load"].includes(verb)) {
+        showMsg("请先 login 用户名 或 load 存档！", "warn");
+        return;
+    }
+
+    // ----------- 登录命令（自动切换本地/云端）-----------
+    if (verb === "login") {
+        const username = argStr;
+        if(!username) {
+            showMsg("用法：login 用户名", "warn");
+            return;
+        }
+        if (ONLINE_MODE) {
+            // 联网登录
+            try {
+                let resp = await fetch('/api/login', {
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({username})
+                });
+                let data = await resp.json();
+                if(data.player){
+                    GAME.player = data.player;
+                    loginUser = username;
+                    needLogin = false;
+                    localStorage.setItem('mud_user', username); // 保存当前用户名
+                    showMsg(`欢迎你, <b>${GAME.player.name}</b>!`, "success");
+                    // 自动进入初始房间
+                    if(!GAME.player.location){
+                        GAME.player.location = Object.keys(GAME.rooms)[0];
+                    }
+                    if(window.MUD_COMMANDS.look) window.MUD_COMMANDS.look([], GAME);
+                } else {
+                    showMsg(data.error||"登录失败", "error");
+                }
+            } catch(e){
+                showMsg("服务器连接失败！已切换到本地游玩模式。", "error");
+                ONLINE_MODE=false; // 动态降级
+            }
+            return;
+        } else {
+            // 本地登录
+            let users=getAllUsers();
+            if(users[username]){
+                GAME.player={...users[username]};
+                loginUser=username; needLogin=false;
+                localStorage.setItem('mud_user', username);
+                showMsg(`欢迎你, <b>${GAME.player.name}</b>!`, "success");
+            }else{
+                GAME.player={name:username,location:Object.keys(GAME.rooms)[0],inventory:['金币'],health:30,maxHealth:30};
+                loginUser=username; needLogin=false;
+                localStorage.setItem('mud_user', username);
+                saveCurrentPlayer();
+                showMsg(`新角色已创建：<b>${GAME.player.name}</b>`, "success");
+            }
+            if(window.MUD_COMMANDS.look) window.MUD_COMMANDS.look([], GAME);
+            return;
+        }
+    }
+
+    // ----------- 存档保存命令 ----------
+    if(verb === "save"){
+        if(ONLINE_MODE){
+            try{
+               await fetch('/api/save',{
+                   method:'POST',
+                   headers:{'Content-Type':'application/json'},
+                   body:JSON.stringify({player:GAME.player})
+               });
+               showMsg("云端存档成功！","success");
+            }catch(e){
+               showMsg("云端存档失败，已切换到本地模式","warn");
+               ONLINE_MODE=false;//降级为本地
+               saveCurrentPlayer(); 
+               showMsg("已保存到本地！","success");
+            }
+        }else{
+           saveCurrentPlayer();
+           showMsg("已保存到本地！","success");
+        }
+        return;
+     }
+
+     // ----------- 本地载入命令 ----------
+     if(verb==="load"){
+         let users=getAllUsers();
+         if(loginUser && users[loginUser]){
+             GAME.player={...users[loginUser]};
+             needLogin=false;
+             showMsg("本地存档已载入："+loginUser,"success");
+             if(window.MUD_COMMANDS.look)
+                 window.MUD_COMMANDS.look([], GAME);
+         }else{
+             showMsg("没有可用的本地存档","warn");
+         }
+         return;
+     }
+
+     // 登出功能
+     if (verb === "logout") {
+         loginUser=null; needLogin=true; 
+         GAME.player={};
+         localStorage.removeItem('mud_user');
+         showMsg("你已退出登录，请重新 login 用户名", "warn");
+         return;
+     }
+
+     // 命令分发（外部命令优先）
+     if(window.MUD_COMMANDS && typeof window.MUD_COMMANDS[verb]==='function'){
+         await window.MUD_COMMANDS[verb](args, GAME);
+         return;
+     }
+
+     // help/help/h 内置帮助
+     if(['help','h'].includes(verb)){
+          [
+          "主要命令:",
+             "look/l           - 查看当前房间",
+             "go/move [方向] 或 north/east... - 移动",
+             "get/take [名称]                 - 拾取房间内某个道具",
+             "drop [名称]                     - 丢弃背包里的某个道具",
+             "inventory/i                     - 查看背包",
+             "name [名字]                      - 设置你的角色名",
+             "login [名字]                     - 登录游戏",
+             "logout                           - 登出游戏",
+             "save                             - 保存游戏",
+             "load                             - 加载游戏",
+             "help/h                           - 显示帮助"
+          ].forEach(s=>showMsg(s,"info"));
+          return;
+     }
+
+     showMsg("无法识别的指令："+cmd,'warn');
+}
+
+// =================== 初始化流程 ===================
+(async function main(){
+ document.getElementById('output').innerHTML='正在检测服务器状态...';
+
+ ONLINE_MODE=await checkServerOnline();
+
+ document.getElementById('output').innerHTML=(ONLINE_MODE ? 
+   "<span style='color:#39f691'>🌐 已连接服务器，联网模式</span>" :
+   "<span style='color:#ff0'>💻 未连接服务器，本地游玩模式</span>"
+ );
+
+ const data=await loadAllAreas();
+ if(!data){return;}
+
+ GAME.areas=data.areas; 
+ GAME.rooms=data.rooms;
+
+ // 默认进入第一个区域第一个房间
+ let firstRoomId=null;
+ for(let aid in data.areas){
+   let a=data.areas[aid];
+   if(Array.isArray(a.rooms)&&a.rooms.length>0){
+       firstRoomId=a.rooms[0].id; break;
+   }
+ }
+ GAME.player.location=firstRoomId;
+
+ clearScreen();
+
+if(needLogin){
+   showMsg("=========================================","info");
+   showMsg(" 🏡 欢迎来到MUD终端 ","info");
+   showMsg("<b>请先输入：</b> login 用户名 或 load 存档", "info");
+   showMsg((ONLINE_MODE?"<b>当前为联网模式，可云端同步角色。</b>":"<b>当前为本地离线模式，仅在浏览器保存。</b>"),"info")
+   showMsg("=========================================","info");
+} else{
+   showMsg("=========================================","info");
+   showMsg(" 🏡 欢迎回来, <b>"+loginUser+"</b>！","info");
+   showMsg((ONLINE_MODE?"<b>当前为联网模式，可云端同步角色。</b>":"<b>当前为本地离线模式，仅在浏览器保存。</b>"),"info")
+   showMsg("=========================================","info");
+}
+
+ await loadAllCommands();
+
+ setTimeout(()=>{
+   document.getElementById('input-line').style.display='';
+   const cmdInput=document.getElementById('cmdInput');
+   cmdInput.addEventListener('keydown', function(e) {
+         if(e.key==="Enter"){
+             e.preventDefault();
+             let cmd=(this.textContent||this.innerText).trim();
+             handleCommand(cmd);
+         }
+   });
+   document.body.addEventListener('click',()=>cmdInput.focus());
+   cmdInput.focus();
+ },200);
+
+ // 自动执行一次look，显示初始房间信息（如果有look命令）
+ if(window.MUD_COMMANDS.look)
+     window.MUD_COMMANDS.look([], GAME);
+
+})();
+</script>
+</body>
+</html>

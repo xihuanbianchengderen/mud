@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>YAML 文件多模板生成器</title>
+  <link rel="stylesheet" href="codemirror.css">
+  <style>
+    .CodeMirror { height: auto; border:1px solid #ccc; font-size:16px;}
+    body { font-family: "微软雅黑", Arial, sans-serif; }
+    label, h2 { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>YAML 文件多模板生成器</h2>
+
+  <label for="fileName">自定义文件名：</label>
+  <input type="text" id="fileName" placeholder="例如：village_area"><span>.yml</span>
+
+  <br/><br/>
+  <label for="templateSelect">选择一个模板：</label>
+  <select id="templateSelect" onchange="fillTemplate()">
+    <option value="">--请选择--</option>
+    <option value="mud">MUD区域模板</option>
+  </select>
+
+  <br/><br/>
+  <!-- 用于挂载 CodeMirror 编辑器 -->
+  <textarea id="yamlContent" rows="25" cols="70"></textarea><br/>
+  
+  <button onclick="downloadYML()">生成并下载 .yml 文件</button>
+
+<!-- 引入CodeMirror核心和YAML语法高亮支持 -->
+<script src="codemirror.js"></script>
+<script src="yaml.js"></script>
+
+<script>
+// 模板内容
+const templates = {
+mud:
+`# MUD区域模板（绿叶村）- 完整属性版
+
+area_id: village                     # 区域唯一ID
+name: "绿叶村"                       # 区域名称
+desc: "一个宁静的小村庄，四周被森林环绕。"    # 区域描述
+type: "village"                     # 区域类型（如 village/forest/dungeon）
+level_limit: 1                      # 进入等级限制
+weather: "晴朗"                     # 天气描述
+
+rooms:
+  - id: village_center             # 房间唯一ID
+    name: "村庄中心"                # 房间名称
+    desc: "广场中央有一口古井。"     # 房间描述
+    type: "square"                 # 房间类型（如 square/house/dungeon）
+    exits:                         # 房间出口
+      north: village_north         # 出口ID(北)
+      east: village_east           # 出口ID(东)
+      west: null                   # 出口ID(西)
+      south: null                  # 出口ID(南)
+      up: null                     # 出口ID(上)
+      down: null                   # 出口ID(下)
+    items:                         # 房间物品
+      - coin                       # 添加物品 "coin"
+      - sword                      # 添加物品 "sword"
+    npcs:                          # 房间NPC
+      - mayor                      # 添加NPC "mayor"
+      - merchant                   # # 添加NPC "merchant"
+
+# ...省略更多房间...
+`
+};
+
+function fillTemplate() {
+   let select = document.getElementById('templateSelect');
+   let content = templates[select.value] || '';
+   editor.setValue(content);
+}
+
+function downloadYML() {
+   let content = editor.getValue();
+   let fileName = document.getElementById('fileName').value.trim();
+   if (!fileName) {
+     alert('请输入文件名！');
+     return;
+   }
+   fileName = fileName.replace(/[^a-zA-Z0-9_\-]/g, '_');
+   
+   const blob = new Blob([content], { type:'text/yaml' });
+   const url = URL.createObjectURL(blob);
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = fileName + '.yml';
+   document.body.appendChild(a);
+   a.click();
+   document.body.removeChild(a);
+   URL.revokeObjectURL(url);
+}
+
+// 初始化CodeMirror编辑器（YAML高亮）
+let editor = CodeMirror.fromTextArea(document.getElementById("yamlContent"), {
+    mode: "yaml",
+    lineNumbers: true,
+    lineWrapping:true,
+});
+</script>
+
+</body>
+</html>
